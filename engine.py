@@ -34,8 +34,37 @@ MODEL_NAME = "gemini-3.6-flash"
 MAX_CLAIMS_PER_REQUEST = 6
 TEMPERATURE = 0.1
 
+import time
+
 _gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 _parallel_client = Parallel()  # reads PARALLEL_API_KEY from the environment
+
+
+def _generate_with_retry(contents: str, schema, max_retries: int = 1, backoff_seconds: int = 3):
+    """
+    Wraps every Gemini call with one automatic retry.
+    Added after a live 503 ('model experiencing high demand') during testing —
+    Google's own SDK retries internally a few times before giving up, but not
+    long enough for a transient capacity spike. This is a second layer on top.
+    """
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            return _gemini_client.models.generate_content(
+                model=MODEL_NAME,
+                contents=contents,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": schema,
+                    "temperature": TEMPERATURE,
+                },
+            )
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                time.sleep(backoff_seconds)
+                continue
+    raise last_exception
 
 
 # --- Schemas --------------------------------------------------------------
@@ -128,15 +157,7 @@ def extract_claims(scene_text: str, genre_mode: str = "modern") -> List[Claim]:
     genre_instruction = GENRE_MODE_INSTRUCTIONS.get(genre_mode, GENRE_MODE_INSTRUCTIONS["modern"])
     prompt = EXTRACTION_SYSTEM_PROMPT.format(genre_instruction=genre_instruction, scene_text=scene_text)
 
-    response = _gemini_client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": ClaimExtractionResult,
-            "temperature": TEMPERATURE,
-        },
-    )
+    response = _generate_with_retry(prompt, ClaimExtractionResult)
     result: ClaimExtractionResult = response.parsed
     return result.claims[:MAX_CLAIMS_PER_REQUEST]
 
@@ -184,14 +205,9 @@ def compare(claim: Claim, evidence: List[dict]) -> dict:
         for e in evidence
     )
 
-    response = _gemini_client.models.generate_content(
-        model=MODEL_NAME,
-        contents=COMPARISON_PROMPT.format(claim=claim.claim, evidence_block=evidence_block),
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": ComparisonResult,
-            "temperature": TEMPERATURE,
-        },
+    response = _generate_with_retry(
+        COMPARISON_PROMPT.format(claim=claim.claim, evidence_block=evidence_block),
+        ComparisonResult,
     )
     result: ComparisonResult = response.parsed
 
@@ -272,4 +288,3 @@ def verify_scene(scene_text: str, genre_mode: str = "modern") -> List[dict]:
             }
         results.append(result)
     return results
-  
