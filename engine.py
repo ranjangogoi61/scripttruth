@@ -27,9 +27,10 @@ from pydantic import BaseModel
 load_dotenv()
 
 # --- Configuration ------------------------------------------------------
-# Check aistudio.google.com for the current available Flash model name on
-# your account if this model id ever returns a "not found" error.
-MODEL_NAME = "gemini-2.5-flash"
+# Confirmed working via live error message from Google on 7 Sept 2026:
+# gemini-2.5-flash was retired; gemini-3.6-flash is the current replacement.
+# If this ever 404s again, the error message itself names the correct model.
+MODEL_NAME = "gemini-3.6-flash"
 MAX_CLAIMS_PER_REQUEST = 6
 TEMPERATURE = 0.1
 
@@ -239,7 +240,21 @@ def compare(claim: Claim, evidence: List[dict]) -> dict:
 
 # --- Orchestrator -----------------------------------------------------------
 def verify_scene(scene_text: str, genre_mode: str = "modern") -> List[dict]:
-    claims = extract_claims(scene_text, genre_mode)
+    # Fix 8, extended: extraction itself can fail (bad model name, API outage,
+    # quota), not just per-claim retrieval/comparison. A failure here must
+    # never crash the request — it must return a readable result instead.
+    try:
+        claims = extract_claims(scene_text, genre_mode)
+    except Exception as e:
+        return [{
+            "claim": "(extraction step)",
+            "category": "other",
+            "verdict": "Verification failed",
+            "confidence": 0,
+            "source_url": None,
+            "note": f"Could not analyze this scene right now: {e}",
+        }]
+
     results = []
     for claim in claims:
         # Fix 8 — one claim's failure never kills the whole batch
@@ -257,3 +272,4 @@ def verify_scene(scene_text: str, genre_mode: str = "modern") -> List[dict]:
             }
         results.append(result)
     return results
+  
