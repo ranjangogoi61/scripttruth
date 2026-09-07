@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ScriptTruth</title>
+<style>
+  :root {
+    --paper: #F7F5EF;
+    --ink: #1C2321;
+    --ink-soft: #4A5450;
+    --line: #D9D4C6;
+    --verified: #1E5B3A;
+    --contradicted: #8C2F1B;
+    --review: #8A6D3B;
+    --disputed: #5B4B8A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+    padding: 32px 20px 80px;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 {
+    font-family: Georgia, "Iowan Old Style", serif;
+    font-size: 28px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  .tagline {
+    color: var(--ink-soft);
+    font-size: 15px;
+    margin: 0 0 28px;
+    max-width: 46ch;
+  }
+  label {
+    display: block;
+    font-size: 14px;
+    color: var(--ink-soft);
+    margin-bottom: 6px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 140px;
+    padding: 14px;
+    font-size: 15px;
+    font-family: inherit;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #FFFFFF;
+    color: var(--ink);
+    resize: vertical;
+  }
+  select {
+    margin-top: 10px;
+    padding: 8px 10px;
+    font-size: 14px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #FFFFFF;
+    color: var(--ink);
+  }
+  button {
+    margin-top: 16px;
+    padding: 10px 22px;
+    font-size: 15px;
+    font-weight: 600;
+    background: var(--ink);
+    color: var(--paper);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .results { margin-top: 36px; }
+  .entry {
+    border-left: 3px solid var(--line);
+    padding: 10px 16px;
+    margin-bottom: 14px;
+  }
+  .entry.Verified, .entry.Consistent { border-color: var(--verified); }
+  .entry.Contradicted { border-color: var(--contradicted); }
+  .entry.Needs.Review, .entry.Insufficient.Evidence { border-color: var(--review); }
+  .entry.Disputed { border-color: var(--disputed); }
+  .claim-text { font-size: 15px; margin-bottom: 4px; }
+  .verdict-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+  .verdict-label { font-weight: 600; color: var(--ink); }
+  .note { font-size: 13px; color: var(--ink-soft); margin-top: 4px; }
+  a.source { font-size: 13px; }
+  .status { font-size: 14px; color: var(--ink-soft); margin-top: 16px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>ScriptTruth</h1>
+    <p class="tagline">Paste a scene. Every checkable claim gets verified against live sources — with a citation you can open yourself.</p>
+
+    <label for="scene">Scene</label>
+    <textarea id="scene" placeholder="e.g. Kolkata, 1987. Rahul sits at a chai stall, scrolling Instagram on his phone."></textarea>
+
+    <div>
+      <label for="genre" style="display:inline; margin-right:8px;">Setting</label>
+      <select id="genre">
+        <option value="modern">Modern / Realistic</option>
+        <option value="historical">Historical / Period</option>
+        <option value="fictional">Fictional Universe</option>
+        <option value="alternate_history">Alternate Timeline</option>
+      </select>
+    </div>
+
+    <button id="submit">Verify Scene</button>
+    <div id="status" class="status"></div>
+    <div id="results" class="results"></div>
+  </div>
+
+<script>
+const submitBtn = document.getElementById('submit');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+
+submitBtn.addEventListener('click', async () => {
+  const scene_text = document.getElementById('scene').value.trim();
+  const genre_mode = document.getElementById('genre').value;
+  if (!scene_text) { statusEl.textContent = 'Please paste a scene.'; return; }
+
+  submitBtn.disabled = true;
+  statusEl.textContent = 'Checking claims — this may take up to a minute...';
+  resultsEl.innerHTML = '';
+
+  try {
+    const res = await fetch('/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene_text, genre_mode }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      statusEl.textContent = data.detail || 'Something went wrong.';
+      submitBtn.disabled = false;
+      return;
+    }
+
+    statusEl.textContent = data.results.length === 0
+      ? 'No checkable claims found in this scene.'
+      : '';
+
+    data.results.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'entry ' + r.verdict.replace(/ /g, '.');
+      const sourceHtml = r.source_url
+        ? `<a class="source" href="${r.source_url}" target="_blank" rel="noopener">source</a>`
+        : '';
+      div.innerHTML = `
+        <div class="claim-text">${r.claim}</div>
+        <div class="verdict-row">
+          <span class="verdict-label">${r.verdict}</span>
+          <span>confidence ${r.confidence}%</span>
+          ${sourceHtml}
+        </div>
+        <div class="note">${r.note || ''}</div>
+      `;
+      resultsEl.appendChild(div);
+    });
+  } catch (err) {
+    statusEl.textContent = 'Request failed. Please try again.';
+  }
+  submitBtn.disabled = false;
+});
+</script>
+</body>
+</html>
