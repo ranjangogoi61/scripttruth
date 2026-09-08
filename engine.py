@@ -30,6 +30,7 @@ FAILURE MODES HANDLED (full matrix in ScriptTruth_Failure_Modes.md)
 
 import os
 import time
+import random
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Literal
@@ -52,11 +53,15 @@ MAX_CLAIMS_PER_REQUEST = 6
 MAX_CONCURRENT_CLAIMS = 3
 
 TEMPERATURE = 0.1
-GEMINI_TIMEOUT_MS = 25_000       # hard cap per Gemini call
+GEMINI_TIMEOUT_MS = 10_000       # per Gemini call. Deliberately tight: with
+                                 # MAX_RETRIES=3 the worst case must still fit
+                                 # inside GLOBAL_DEADLINE_S (conflict-checked).
 PARALLEL_TIMEOUT_S = 20.0        # hard cap per Parallel call
 GLOBAL_DEADLINE_S = 55           # whole request; returns partial results past this
-RETRY_BACKOFF_S = 1.5
-MAX_RETRIES = 1
+RETRY_BACKOFF_S = 1.0            # base for exponential backoff: 1s, 2s, 4s
+MAX_RETRIES = 3                  # raised from 1 — live logs showed gemini-3.6-flash
+                                 # is under heavy load and one retry wasn't enough.
+                                 # Costs nothing on the happy path; runs concurrently.
 SEARCH_MODE = "fast"             # turbo|fast|basic|advanced — validated against SDK
 
 _gemini_client = genai.Client(
@@ -107,8 +112,14 @@ def _generate(contents: str, schema):
         except Exception as e:
             last_exc = e
             if attempt < MAX_RETRIES and _is_retryable(e):
-                logger.warning("Retryable Gemini error (attempt %d): %s", attempt + 1, e)
-                time.sleep(RETRY_BACKOFF_S)
+                # Exponential backoff with jitter: 503 spikes are usually short,
+                # but retrying all workers at the same instant re-creates the spike.
+                delay = RETRY_BACKOFF_S * (2 ** attempt) + random.uniform(0, 0.5)
+                logger.warning(
+                    "Retryable Gemini error (attempt %d/%d, waiting %.1fs): %s",
+                    attempt + 1, MAX_RETRIES, delay, e,
+                )
+                time.sleep(delay)
                 continue
             break
     raise last_exc
@@ -377,3 +388,4 @@ def verify_scene(scene_text: str, genre_mode: str = "modern") -> List[dict]:
 
     # Preserve the model's ordering (most likely error first)
     return [results_by_index[i] for i in sorted(results_by_index)]
+  
