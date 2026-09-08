@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ScriptTruth — evidence-backed fact verification</title>
+<meta name="description" content="Extracts factual claims from creative and editorial text, verifies each against live web sources, and cites the evidence.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233B82F6'/><path d='M9 16.5l4.5 4.5L23 11.5' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#090B11; --surface:#111827; --card:#161E2E; --card-hi:#1B2436;
+    --line:rgba(148,163,184,.13); --line-hi:rgba(96,165,250,.30);
+    --ink:#F1F5F9; --ink-2:#94A3B8; --ink-3:#64748B;
+    --blue:#3B82F6; --blue-2:#60A5FA; --glow:rgba(59,130,246,.16);
+    --verified:#34D399; --contradicted:#F87171;
+    --review:#FBBF24; --disputed:#A78BFA; --none:#64748B;
+    --r:14px; --ease:cubic-bezier(.16,1,.3,1);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;
+    font-size:15px; line-height:1.6; position:relative; overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- ambient ---------- */
+  .aura{position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden}
+  .orb{
+    position:absolute; top:-210px; left:50%; width:640px; height:640px;
+    margin-left:-320px; border-radius:50%;
+    background:radial-gradient(circle,rgba(59,130,246,.18) 0%,rgba(59,130,246,.08) 33%,rgba(59,130,246,.025) 56%,transparent 72%);
+    animation:breathe 11s var(--ease) infinite; will-change:transform,opacity;
+  }
+  .ring{
+    position:absolute; top:-160px; left:50%; width:520px; height:520px;
+    margin-left:-260px; border-radius:50%;
+    border:1px solid rgba(96,165,250,.09);
+    animation:spin 46s linear infinite; will-change:transform;
+  }
+  .ring:after{content:''; position:absolute; top:50%; left:-3px; width:5px; height:5px;
+    border-radius:50%; background:var(--blue-2); box-shadow:0 0 12px 3px rgba(96,165,250,.5)}
+  .ring.b{width:390px;height:390px;margin-left:-195px;top:-95px;
+    animation:spin 34s linear infinite reverse; border-color:rgba(96,165,250,.06)}
+  .p{position:absolute;width:2px;height:2px;border-radius:50%;background:var(--blue-2);
+    opacity:0;animation:float 14s ease-in-out infinite; will-change:transform,opacity}
+  @keyframes breathe{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.08);opacity:1}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes float{0%{transform:translateY(24px);opacity:0}22%{opacity:.5}78%{opacity:.3}100%{transform:translateY(-90px);opacity:0}}
+  @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+  /* ---------- nav ---------- */
+  nav{
+    position:sticky; top:0; z-index:20;
+    background:rgba(9,11,17,.72); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    border-bottom:1px solid var(--line);
+  }
+  .nav-in{
+    max-width:1180px; margin:0 auto; padding:13px 20px;
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+  }
+  .brand{display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--ink)}
+  .logo{width:30px;height:30px;flex-shrink:0;border-radius:9px;display:block}
+  .brand-txt{display:flex; flex-direction:column; line-height:1.15}
+  .brand-name{font-size:15.5px; font-weight:600; letter-spacing:-.02em}
+  .brand-sub{
+    font-family:'JetBrains Mono',monospace; font-size:8.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--ink-3);
+  }
+  .nav-link{
+    font-size:12.5px; font-weight:500; color:var(--ink-2); text-decoration:none;
+    display:inline-flex; align-items:center; gap:6px; padding:7px 12px;
+    border:1px solid var(--line); border-radius:9px; transition:all .25s var(--ease);
+  }
+  .nav-link:hover{color:var(--ink); border-color:var(--line-hi); background:rgba(59,130,246,.06)}
+
+  .shell{max-width:1180px; margin:0 auto; padding:0 20px 100px; position:relative; z-index:1}
+
+  /* ---------- hero ---------- */
+  header{padding:52px 0 34px; animation:rise .8s var(--ease) both; max-width:720px}
+  .badge{
+    display:inline-flex;align-items:center;gap:7px;
+    background:rgba(59,130,246,.07);border:1px solid var(--line-hi);
+    border-radius:100px;padding:6px 13px;margin-bottom:20px;
+    font-family:'JetBrains Mono',monospace;font-size:10.5px;
+    letter-spacing:.11em;text-transform:uppercase;color:var(--blue-2);
+  }
+  .badge i{width:5px;height:5px;border-radius:50%;background:var(--blue-2);
+    box-shadow:0 0 8px 2px rgba(96,165,250,.55);animation:blink 2.6s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+  h1{font-size:clamp(32px,6.4vw,52px);font-weight:700;line-height:1.06;
+    letter-spacing:-.033em;margin-bottom:18px}
+  h1 span{background:linear-gradient(102deg,var(--blue-2) 0%,#93C5FD 48%,var(--blue) 100%);
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .lede{color:var(--ink-2);font-size:16.5px;font-weight:300;max-width:52ch;line-height:1.66}
+
+  .trust{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    margin-top:26px;padding-top:22px;border-top:1px solid var(--line)}
+  .t-item{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;
+    font-weight:500;color:var(--ink-2)}
+  .t-item svg{flex-shrink:0}
+  .t-sep{width:1px;height:12px;background:var(--line)}
+
+  /* ---------- layout ---------- */
+  .grid{display:grid; grid-template-columns:1fr; gap:26px; align-items:start}
+  @media(min-width:1000px){
+    .grid{grid-template-columns:minmax(0,440px) minmax(0,1fr); gap:34px}
+    .col-l{position:sticky; top:74px}
+  }
+
+  /* ---------- domain tabs ---------- */
+  .sec-label{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-3);margin-bottom:11px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
+  .tab{
+    background:rgba(255,255,255,.03);border:1px solid var(--line);color:var(--ink-3);
+    font-family:inherit;font-size:12.5px;font-weight:500;padding:8px 13px;
+    border-radius:9px;cursor:pointer;transition:all .25s var(--ease);
+    display:inline-flex;align-items:center;gap:6px;
+  }
+  .tab:hover{color:var(--ink-2);border-color:var(--line-hi)}
+  .tab.on{background:rgba(59,130,246,.11);border-color:var(--line-hi);color:var(--blue-2)}
+  .tab.on svg{opacity:1}
+  .tab svg{opacity:.55;flex-shrink:0}
+
+  .examples{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+  .ex{background:rgba(255,255,255,.03);border:1px solid var(--line);color:var(--ink-2);
+    font-family:inherit;font-size:12.5px;font-weight:500;padding:9px 15px;
+    border-radius:100px;cursor:pointer;transition:all .28s var(--ease);white-space:nowrap}
+  .ex:hover,.ex:focus-visible{color:var(--ink);border-color:var(--line-hi);
+    background:rgba(59,130,246,.07);transform:translateY(-2px);
+    box-shadow:0 6px 20px -6px var(--glow);outline:none}
+
+  /* ---------- input ---------- */
+  .field{background:linear-gradient(180deg,rgba(22,30,46,.85),rgba(17,24,39,.85));
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border:1px solid var(--line);border-radius:var(--r);padding:18px;
+    margin-bottom:14px;transition:all .32s var(--ease)}
+  .field:focus-within{border-color:var(--line-hi);
+    box-shadow:0 0 0 4px rgba(59,130,246,.06),0 12px 40px -14px var(--glow)}
+  textarea{width:100%;min-height:118px;background:none;border:none;color:var(--ink);
+    font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.72;
+    resize:vertical;outline:none}
+  textarea::placeholder{color:var(--ink-3);opacity:.6}
+  .meta{display:flex;justify-content:space-between;align-items:center;gap:12px;
+    margin-top:15px;padding-top:15px;border-top:1px solid var(--line);flex-wrap:wrap}
+  .count{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink-3)}
+  .count.over{color:var(--contradicted)}
+  select{background:rgba(255,255,255,.04);border:1px solid var(--line);color:var(--ink-2);
+    font-family:inherit;font-size:12.5px;font-weight:500;padding:8px 11px;
+    border-radius:9px;outline:none;cursor:pointer;transition:all .25s var(--ease)}
+  select:hover{border-color:var(--line-hi);color:var(--ink)}
+  select[hidden]{display:none}
+  button.go{width:100%;background:#fff;color:#0B1120;border:none;border-radius:var(--r);
+    padding:15px;font-family:inherit;font-size:15px;font-weight:600;letter-spacing:-.01em;
+    cursor:pointer;transition:all .3s var(--ease);box-shadow:0 4px 24px -8px rgba(255,255,255,.22)}
+  button.go:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 10px 34px -8px rgba(255,255,255,.34)}
+  button.go:active:not(:disabled){transform:translateY(0)}
+  button.go:disabled{opacity:.35;cursor:default;box-shadow:none}
+
+  /* ---------- timeline / status ---------- */
+  .status{margin-top:18px;font-size:13.5px;color:var(--ink-2)}
+  .status.err{color:var(--contradicted)}
+  .timeline{margin-top:18px;background:rgba(22,30,46,.6);border:1px solid var(--line);
+    border-radius:var(--r);padding:16px 18px;display:none;animation:rise .5s var(--ease) both}
+  .timeline.on{display:block}
+  .step{display:flex;align-items:center;gap:11px;padding:7px 0;font-size:13px;
+    color:var(--ink-3);transition:color .4s var(--ease)}
+  .step .ico{width:16px;height:16px;border-radius:50%;flex-shrink:0;
+    border:1.5px solid var(--ink-3);position:relative;transition:all .4s var(--ease)}
+  .step.active{color:var(--ink)}
+  .step.active .ico{border-color:var(--blue-2);box-shadow:0 0 0 4px rgba(59,130,246,.10);
+    animation:pulse 1.6s ease-in-out infinite}
+  .step.done{color:var(--ink-2)}
+  .step.done .ico{border-color:var(--verified);background:var(--verified)}
+  .step.done .ico:after{content:'';position:absolute;left:4.5px;top:1.5px;width:4px;height:8px;
+    border:solid #0B1120;border-width:0 1.6px 1.6px 0;transform:rotate(45deg)}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(59,130,246,.10)}50%{box-shadow:0 0 0 7px rgba(59,130,246,.04)}}
+
+  /* ---------- results ---------- */
+  .placeholder{
+    border:1px dashed var(--line);border-radius:var(--r);padding:34px 24px;
+    text-align:center;color:var(--ink-3);font-size:13.5px;font-weight:300;
+  }
+  .placeholder svg{opacity:.35;margin-bottom:12px}
+  .summary{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;animation:rise .55s var(--ease) both}
+  .stat{flex:1;min-width:110px;background:var(--card);border:1px solid var(--line);
+    border-radius:11px;padding:13px 15px}
+  .stat span{display:block;font-family:'JetBrains Mono',monospace;font-size:9.5px;
+    letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin-bottom:5px}
+  .stat b{font-size:22px;font-weight:600;letter-spacing:-.02em}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:18px;margin-bottom:12px;position:relative;overflow:hidden;
+    transition:all .32s var(--ease);animation:rise .55s var(--ease) both}
+  .card:hover{background:var(--card-hi);border-color:var(--line-hi)}
+  .card:before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--none)}
+  .card[data-v="Verified"]:before,.card[data-v="Likely Consistent"]:before{background:var(--verified)}
+  .card[data-v="Contradicted"]:before,.card[data-v="Likely Contradicted"]:before{background:var(--contradicted)}
+  .card[data-v="Needs Review"]:before{background:var(--review)}
+  .card[data-v="Disputed"]:before{background:var(--disputed)}
+  .vrow{display:flex;align-items:center;gap:9px;margin-bottom:11px;flex-wrap:wrap}
+  .verdict{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;
+    letter-spacing:.13em;text-transform:uppercase;padding:4px 9px;border-radius:6px;
+    background:rgba(100,116,139,.13);color:var(--none)}
+  .card[data-v="Verified"] .verdict,.card[data-v="Likely Consistent"] .verdict{background:rgba(52,211,153,.11);color:var(--verified)}
+  .card[data-v="Contradicted"] .verdict,.card[data-v="Likely Contradicted"] .verdict{background:rgba(248,113,113,.11);color:var(--contradicted)}
+  .card[data-v="Needs Review"] .verdict{background:rgba(251,191,36,.11);color:var(--review)}
+  .card[data-v="Disputed"] .verdict{background:rgba(167,139,250,.11);color:var(--disputed)}
+  .cat{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.09em;
+    text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line);
+    padding:3px 7px;border-radius:5px}
+  .claim{font-size:15.5px;line-height:1.55;margin-bottom:13px;overflow-wrap:anywhere}
+  .note{font-size:13px;color:var(--ink-2);font-weight:300;line-height:1.62;
+    padding:11px 13px;margin-bottom:13px;overflow-wrap:anywhere;
+    background:rgba(255,255,255,.018);border-radius:9px;border-left:2px solid var(--line)}
+  .conf{display:flex;align-items:center;gap:12px;margin-bottom:13px}
+  .bar{flex:1;height:5px;background:rgba(148,163,184,.12);border-radius:3px;overflow:hidden}
+  .fill{height:100%;border-radius:3px;width:0;transition:width 1s var(--ease);
+    background:linear-gradient(90deg,var(--none),var(--none))}
+  .card[data-v="Verified"] .fill,.card[data-v="Likely Consistent"] .fill{background:linear-gradient(90deg,rgba(52,211,153,.55),var(--verified))}
+  .card[data-v="Contradicted"] .fill,.card[data-v="Likely Contradicted"] .fill{background:linear-gradient(90deg,rgba(248,113,113,.55),var(--contradicted))}
+  .card[data-v="Needs Review"] .fill{background:linear-gradient(90deg,rgba(251,191,36,.55),var(--review))}
+  .card[data-v="Disputed"] .fill{background:linear-gradient(90deg,rgba(167,139,250,.55),var(--disputed))}
+  .pct{font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:500;
+    color:var(--ink);min-width:38px;text-align:right}
+  .foot{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  .toggle,.src{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;font-weight:500;background:none;border:none;padding:0;
+    cursor:pointer;color:var(--ink-3);transition:color .25s var(--ease)}
+  .toggle:hover{color:var(--blue-2)}
+  .src{color:var(--blue-2);text-decoration:none}
+  .src:hover{color:#93C5FD}
+  .bd{display:none;margin-top:16px;padding-top:15px;border-top:1px solid var(--line)}
+  .bd.open{display:block;animation:rise .4s var(--ease) both}
+  .bd-h{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.13em;
+    text-transform:uppercase;color:var(--ink-3);margin-bottom:13px}
+  .brow{display:flex;align-items:center;gap:10px;margin-bottom:9px;font-size:12.5px}
+  .bname{color:var(--ink-2);flex:1;font-weight:300}
+  .bw{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--ink-3);width:32px}
+  .bbar{width:62px;height:4px;background:rgba(148,163,184,.12);border-radius:2px;overflow:hidden}
+  .bbf{height:100%;border-radius:2px;background:linear-gradient(90deg,rgba(59,130,246,.45),var(--blue-2))}
+  .bval{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--ink-2);width:34px;text-align:right}
+  .bd-note{font-size:11.5px;color:var(--ink-3);font-weight:300;margin-top:12px;line-height:1.6}
+
+  footer{margin-top:52px;padding-top:22px;border-top:1px solid var(--line);
+    font-size:11.5px;color:var(--ink-3);font-weight:300;line-height:1.75}
+  footer a{color:var(--ink-2);text-decoration:none}
+  footer a:hover{color:var(--blue-2)}
+
+  @media(max-width:420px){ .t-sep{display:none} .trust{gap:11px} }
+  @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="aura">
+  <div class="orb"></div><div class="ring"></div><div class="ring b"></div>
+  <div class="p" style="left:22%;top:30%;animation-delay:0s"></div>
+  <div class="p" style="left:38%;top:44%;animation-delay:2.4s"></div>
+  <div class="p" style="left:57%;top:26%;animation-delay:4.9s"></div>
+  <div class="p" style="left:71%;top:41%;animation-delay:7.3s"></div>
+  <div class="p" style="left:84%;top:33%;animation-delay:9.8s"></div>
+  <div class="p" style="left:14%;top:47%;animation-delay:12.2s"></div>
+</div>
+
+<nav>
+  <div class="nav-in">
+    <a class="brand" href="/">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#60A5FA"/><stop offset="1" stop-color="#2563EB"/>
+          </linearGradient>
+        </defs>
+        <rect width="32" height="32" rx="9" fill="url(#lg)"/>
+        <path d="M10.5 8.5h8.2l4.3 4.3v10.7a1.5 1.5 0 0 1-1.5 1.5H10.5A1.5 1.5 0 0 1 9 23.5v-13.5A1.5 1.5 0 0 1 10.5 8.5z" fill="rgba(255,255,255,.22)"/>
+        <path d="M12.4 16.6l2.7 2.7 5.2-5.4" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand-txt">
+        <span class="brand-name">ScriptTruth</span>
+        <span class="brand-sub">Evidence engine</span>
+      </span>
+    </a>
+    <a class="nav-link" href="https://github.com/ranjangogoi61/scripttruth" target="_blank" rel="noopener">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.2-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.6 5 18.6 5.3 18.6 5.3c.6 1.6.2 2.8.1 3.1.8.9 1.2 1.9 1.2 3.2 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<div class="shell">
+  <header>
+    <div class="badge"><i></i>Evidence-backed verification</div>
+    <h1>Every factual claim,<br>checked against <span>live sources.</span></h1>
+    <p class="lede">ScriptTruth reads your text, pulls out the claims that can actually be checked, searches the live web for each one, and returns a verdict with the source attached.</p>
+    <div class="trust">
+      <span class="t-item">
+        <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l2.4 6.1L21 10.5l-6.6 2.4L12 19l-2.4-6.1L3 10.5l6.6-2.4z" fill="#60A5FA"/></svg>
+        Google Gemini
+      </span>
+      <span class="t-sep"></span>
+      <span class="t-item">
+        <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v16M12 4v16M18 4v16" stroke="#60A5FA" stroke-width="2.6" stroke-linecap="round"/></svg>
+        Parallel Search
+      </span>
+      <span class="t-sep"></span>
+      <span class="t-item">
+        <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 3.5v6c0 4.6-3.4 8.7-8 9.5-4.6-.8-8-4.9-8-9.5v-6z" fill="none" stroke="#60A5FA" stroke-width="1.9"/><path d="M8.6 12.2l2.4 2.4 4.4-4.6" stroke="#60A5FA" stroke-width="2.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Cited evidence
+      </span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="col-l">
+      <div class="sec-label">What are you checking?</div>
+      <div class="tabs" id="tabs"></div>
+
+      <div class="sec-label">Try an example</div>
+      <div class="examples" id="examples"></div>
+
+      <div class="field">
+        <textarea id="scene"></textarea>
+        <div class="meta">
+          <span class="count" id="count">0 / 500 words</span>
+          <select id="genre">
+            <option value="modern">Modern / Realistic</option>
+            <option value="historical">Historical / Period</option>
+            <option value="fictional">Fictional Universe</option>
+            <option value="alternate_history">Alternate Timeline</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="go" id="go">Verify</button>
+
+      <div class="timeline" id="timeline">
+        <div class="step"><span class="ico"></span>Extracting verifiable claims</div>
+        <div class="step"><span class="ico"></span>Searching live sources via Parallel</div>
+        <div class="step"><span class="ico"></span>Comparing claims against evidence</div>
+        <div class="step"><span class="ico"></span>Scoring confidence and citations</div>
+      </div>
+
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="col-r">
+      <div id="results">
+        <div class="placeholder" id="placeholder">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <div>Results appear here.<br>Pick an example or paste your own text to begin.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Runs on Gemini + Parallel Search. Hosted on Render's free tier — the first request after a quiet period may take 30–60 seconds to wake.
+    <br><a href="https://github.com/ranjangogoi61/scripttruth" target="_blank" rel="noopener">Source on GitHub</a>
+  </footer>
+</div>
+
+<script>
+const DOMAINS = {
+  screenplay:{
+    label:'Screenplay', usesGenre:true,
+    icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 4v16"/></svg>',
+    placeholder:'Paste a scene…\n\nKolkata, 1987. Rahul sits at a chai stall,\nscrolling Instagram on his phone.',
+    examples:[
+      {label:'Anachronism', genre:'modern', text:'Kolkata, 1987. Rahul sits at a chai stall, scrolling Instagram on his phone.'},
+      {label:'Wrong date', genre:'modern', text:'Priya laughs, remembering how the Berlin Wall fell in 1993.'},
+      {label:'Period detail', genre:'historical', text:'1960s Delhi. The shopkeeper weighs rice on a brass scale while a transistor radio plays cricket commentary.'},
+      {label:'Fiction (no false flags)', genre:'fictional', text:'Sam walks into the lobby of Stark Industries. Outside, the dragon circles the tower once before breathing fire on the gate.'}
+    ]
+  },
+  news:{
+    label:'News', usesGenre:false,
+    icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 5h13v14H4z"/><path d="M17 9h3v8a2 2 0 0 1-3 1.7"/><path d="M7 9h7M7 13h7M7 16h4"/></svg>',
+    placeholder:'Paste news copy…\n\nThe agency reported that global shipments rose\n12% last quarter, the sharpest rise since 2019.',
+    examples:[
+      {label:'Statistic check', genre:'modern', text:'The report states that global electric vehicle sales doubled in 2021, making China responsible for more than half of all EVs sold worldwide.'},
+      {label:'Historical claim', genre:'modern', text:'The spokesperson noted that the Chandrayaan-3 mission landed near the lunar south pole in August 2023, a first for any country.'}
+    ]
+  },
+  podcast:{
+    label:'Podcast', usesGenre:false,
+    icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+    placeholder:'Paste a transcript segment…\n\nGUEST: And that\'s why the first commercial\nflight happened way back in 1914.',
+    examples:[
+      {label:'Guest claim', genre:'modern', text:'GUEST: People forget the first commercial passenger flight took place in 1914, and it lasted about twenty three minutes.'},
+      {label:'Cited study', genre:'modern', text:'HOST: There was a Stanford study showing that remote workers were 13 percent more productive over a nine month period.'}
+    ]
+  },
+  advertising:{
+    label:'Advertising', usesGenre:false,
+    icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1z"/><path d="M17 9a4 4 0 0 1 0 6"/></svg>',
+    placeholder:'Paste ad copy…\n\nIndia\'s number one selling water purifier,\ntrusted by over 10 million families.',
+    examples:[
+      {label:'Superlative claim', genre:'modern', text:'The campaign says: India\'s number one selling water purifier, trusted by over 10 million families since 1985.'},
+      {label:'Performance claim', genre:'modern', text:'Our battery lasts 40 percent longer than any competitor and charges fully in under 15 minutes.'}
+    ]
+  }
+};
+
+const $ = id => document.getElementById(id);
+const sceneEl=$('scene'), genreEl=$('genre'), goEl=$('go'), statusEl=$('status'),
+      resultsEl=$('results'), countEl=$('count'), timelineEl=$('timeline'),
+      tabsEl=$('tabs'), examplesEl=$('examples');
+
+let activeDomain = 'screenplay';
+
+function showPlaceholder(){
+  resultsEl.innerHTML='';
+  const p=document.createElement('div'); p.className='placeholder';
+  p.innerHTML='<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+  const d=document.createElement('div');
+  d.textContent='Results appear here. Pick an example or paste your own text to begin.';
+  p.appendChild(d); resultsEl.appendChild(p);
+}
+
+function renderExamples(){
+  examplesEl.innerHTML='';
+  DOMAINS[activeDomain].examples.forEach(ex=>{
+    const b=document.createElement('button');
+    b.className='ex'; b.type='button'; b.textContent=ex.label;
+    b.addEventListener('click',()=>{
+      sceneEl.value=ex.text;
+      if(DOMAINS[activeDomain].usesGenre) genreEl.value=ex.genre;
+      updateCount(); sceneEl.focus();
+      statusEl.textContent=''; statusEl.className='status';
+    });
+    examplesEl.appendChild(b);
+  });
+}
+
+function selectDomain(key){
+  if(!DOMAINS[key]) key='screenplay';
+  activeDomain=key;
+  [...tabsEl.children].forEach(t=>t.classList.toggle('on', t.dataset.k===key));
+  genreEl.hidden = !DOMAINS[key].usesGenre;
+  sceneEl.placeholder = DOMAINS[key].placeholder;
+  sceneEl.value=''; updateCount();
+  statusEl.textContent=''; statusEl.className='status';
+  renderExamples(); showPlaceholder();
+}
+
+Object.entries(DOMAINS).forEach(([k,d])=>{
+  const t=document.createElement('button');
+  t.className='tab'; t.type='button'; t.dataset.k=k;
+  t.innerHTML=d.icon;                        // static trusted markup only
+  const s=document.createElement('span'); s.textContent=d.label;
+  t.appendChild(s);
+  t.addEventListener('click',()=>selectDomain(k));
+  tabsEl.appendChild(t);
+});
+
+function updateCount(){
+  const n = sceneEl.value.trim() ? sceneEl.value.trim().split(/\s+/).length : 0;
+  countEl.textContent = n+' / 500 words';
+  countEl.className = 'count' + (n>500 ? ' over':'');
+  goEl.disabled = n>500;
+}
+sceneEl.addEventListener('input',updateCount);
+
+let tlTimers=[];
+const steps=()=>[...timelineEl.querySelectorAll('.step')];
+function tlReset(){
+  tlTimers.forEach(clearTimeout); tlTimers=[];
+  steps().forEach(s=>s.className='step');
+  timelineEl.classList.remove('on');
+}
+function tlStart(){
+  tlReset(); timelineEl.classList.add('on');
+  const s=steps(); s[0].classList.add('active');
+  [2600,9000,15000].forEach((ms,i)=>{
+    tlTimers.push(setTimeout(()=>{
+      s[i].className='step done';
+      if(s[i+1]) s[i+1].classList.add('active');
+    },ms));
+  });
+}
+function tlFinish(){
+  tlTimers.forEach(clearTimeout); tlTimers=[];
+  steps().forEach(s=>s.className='step done');
+  setTimeout(()=>timelineEl.classList.remove('on'),450);
+}
+
+const WEIGHTS = [
+  ['Source agreement','source_agreement','35%'],
+  ['Source authority','source_authority','25%'],
+  ['Evidence relevance','evidence_relevance','20%'],
+  ['Claim clarity','claim_clarity','20%']
+];
+
+function card(r){
+  const el=document.createElement('div');
+  el.className='card'; el.setAttribute('data-v', r.verdict);
+
+  const vrow=document.createElement('div'); vrow.className='vrow';
+  const v=document.createElement('span'); v.className='verdict'; v.textContent=r.verdict;
+  vrow.appendChild(v);
+  if(r.category){
+    const c=document.createElement('span'); c.className='cat'; c.textContent=r.category;
+    vrow.appendChild(c);
+  }
+  el.appendChild(vrow);
+
+  const cl=document.createElement('div'); cl.className='claim';
+  cl.textContent=r.claim;
+  el.appendChild(cl);
+
+  if(r.confidence>0){
+    const cf=document.createElement('div'); cf.className='conf';
+    const bar=document.createElement('div'); bar.className='bar';
+    const fill=document.createElement('div'); fill.className='fill';
+    bar.appendChild(fill);
+    const pct=document.createElement('span'); pct.className='pct';
+    pct.textContent=r.confidence+'%';
+    cf.appendChild(bar); cf.appendChild(pct);
+    el.appendChild(cf);
+    requestAnimationFrame(()=>{ fill.style.width=r.confidence+'%'; });
+  }
+
+  if(r.note){
+    const n=document.createElement('div'); n.className='note'; n.textContent=r.note;
+    el.appendChild(n);
+  }
+
+  const foot=document.createElement('div'); foot.className='foot';
+  if(r.breakdown){
+    const t=document.createElement('button');
+    t.className='toggle'; t.type='button'; t.textContent='▸ How this was scored';
+    const bd=document.createElement('div'); bd.className='bd';
+    const h=document.createElement('div'); h.className='bd-h';
+    h.textContent='Weighted confidence score'; bd.appendChild(h);
+    WEIGHTS.forEach(([name,key,w])=>{
+      const val=r.breakdown[key] ?? 0;
+      const row=document.createElement('div'); row.className='brow';
+      const nm=document.createElement('span'); nm.className='bname'; nm.textContent=name;
+      const wt=document.createElement('span'); wt.className='bw'; wt.textContent=w;
+      const bb=document.createElement('div'); bb.className='bbar';
+      const bf=document.createElement('div'); bf.className='bbf'; bf.style.width=val+'%';
+      bb.appendChild(bf);
+      const vl=document.createElement('span'); vl.className='bval'; vl.textContent=val+'%';
+      row.append(nm,wt,bb,vl); bd.appendChild(row);
+    });
+    const bn=document.createElement('div'); bn.className='bd-note';
+    bn.textContent=(r.sources_found||0)+' source'+((r.sources_found===1)?'':'s')+
+      ' retrieved. Agreement is weighted highest because single-source verification is the most common way fact-checking fails.';
+    bd.appendChild(bn);
+    t.addEventListener('click',()=>{
+      const open=bd.classList.toggle('open');
+      t.textContent=(open?'▾':'▸')+' How this was scored';
+    });
+    foot.appendChild(t); el.appendChild(foot); el.appendChild(bd);
+  } else {
+    el.appendChild(foot);
+  }
+
+  if(r.source_url){
+    const a=document.createElement('a');
+    a.className='src'; a.href=r.source_url;
+    a.target='_blank'; a.rel='noopener noreferrer';
+    a.textContent='View source ↗';
+    foot.appendChild(a);
+  }
+  return el;
+}
+
+goEl.addEventListener('click', async ()=>{
+  const scene_text=sceneEl.value.trim();
+  const genre_mode=genreEl.value;
+  const domain=activeDomain;
+  if(!scene_text){
+    statusEl.className='status err'; statusEl.textContent='Paste some text first.';
+    return;
+  }
+  resultsEl.innerHTML='';
+  goEl.disabled=true;
+  statusEl.className='status'; statusEl.textContent='';
+  tlStart();
+
+  try{
+    const res=await fetch('/verify',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({scene_text,genre_mode,domain})
+    });
+    const data=await res.json();
+    if(!res.ok){
+      tlReset();
+      statusEl.className='status err';
+      statusEl.textContent=data.detail||'Something went wrong.';
+      showPlaceholder(); goEl.disabled=false; updateCount(); return;
+    }
+    tlFinish();
+    const rs=data.results||[];
+    if(!rs.length){
+      statusEl.className='status';
+      statusEl.textContent='No checkable factual claims found in this text.';
+      showPlaceholder(); goEl.disabled=false; updateCount(); return;
+    }
+    statusEl.textContent='';
+    const flagged=rs.filter(r=>String(r.verdict).includes('Contradicted')).length;
+    const s=document.createElement('div'); s.className='summary';
+    const mk=(n,v)=>{
+      const d=document.createElement('div'); d.className='stat';
+      const sp=document.createElement('span'); sp.textContent=n;
+      const b=document.createElement('b'); b.textContent=v;
+      d.appendChild(sp); d.appendChild(b); return d;
+    };
+    s.appendChild(mk('Claims checked',rs.length));
+    s.appendChild(mk('Flagged',flagged));
+    resultsEl.appendChild(s);
+    rs.forEach((r,i)=>{
+      const c=card(r); c.style.animationDelay=(i*70)+'ms';
+      resultsEl.appendChild(c);
+    });
+  }catch(e){
+    tlReset();
+    statusEl.className='status err';
+    statusEl.textContent='Could not reach the service. If the app was asleep, wait a moment and try again.';
+    showPlaceholder();
+  }
+  goEl.disabled=false; updateCount();
+});
+
+selectDomain('screenplay');
+</script>
+</body>
+</html>
