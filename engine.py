@@ -45,8 +45,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scripttruth")
 
 # --- Configuration ------------------------------------------------------
-MODEL_NAME = "gemini-3.6-flash"
-MAX_CLAIMS_PER_REQUEST = 6
+# Model fallback chain. Live logs showed gemini-3.6-flash has a free-tier
+# quota of only 20 requests/day, which is far too low to survive a judging
+# window. We try models in order and use the first that works; lite/older
+# models generally carry much higher free-tier daily limits.
+MODEL_CANDIDATES = [
+    "gemini-3.6-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
+]
+MODEL_NAME = MODEL_CANDIDATES[0]  # starting point; _generate falls through
+MAX_CLAIMS_PER_REQUEST = 5
 
 # 3 workers keeps us under free-tier burst limits while cutting wall time ~3x
 # versus sequential. Raising this trades 429 risk for speed.
@@ -75,53 +85,82 @@ _parallel_client = Parallel(timeout=PARALLEL_TIMEOUT_S)
 # Only retry what can actually succeed on a second attempt. Retrying a 404
 # (model retired) or 400 (bad request) burns the user's time and can never help.
 RETRYABLE_MARKERS = (
-    "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
-    "timeout", "Timeout", "500", "INTERNAL",
+    "503", "UNAVAILABLE", "timeout", "Timeout", "500", "INTERNAL",
 )
+# A per-DAY quota exhaustion can never succeed on retry - retrying it just
+# burns more of the same quota. This was actively making things worse.
+DAILY_QUOTA_MARKERS = ("PerDay", "GenerateRequestsPerDayPerProjectPerModel")
 NON_RETRYABLE_MARKERS = (
     "404", "NOT_FOUND", "400", "INVALID_ARGUMENT",
     "401", "403", "PERMISSION_DENIED",
 )
 
 
+def _is_daily_quota(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return any(m in text for m in DAILY_QUOTA_MARKERS)
+
+
 def _is_retryable(exc: Exception) -> bool:
     text = f"{type(exc).__name__}: {exc}"
+    if _is_daily_quota(exc):
+        return False  # retrying consumes more of the exhausted quota
     if any(m in text for m in NON_RETRYABLE_MARKERS):
         return False
+    if "429" in text or "RESOURCE_EXHAUSTED" in text:
+        return True   # per-minute burst limit - a short wait genuinely helps
     return any(m in text for m in RETRYABLE_MARKERS)
 
 
 def _generate(contents: str, schema):
-    """Gemini call with timeout + selective retry + guarded parse."""
+    """
+    Gemini call with model fallback + timeout + selective retry + guarded parse.
+
+    Model fallback exists because free-tier daily quotas are per-model: if the
+    primary model's daily quota is exhausted, a different model still has its
+    own quota. This is what keeps the app alive across a judging window.
+    """
+    global MODEL_NAME
     last_exc = None
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            response = _gemini_client.models.generate_content(
-                model=MODEL_NAME,
-                contents=contents,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": schema,
-                    "temperature": TEMPERATURE,
-                },
-            )
-            # F10 — a blocked or empty response leaves .parsed as None
-            if response is None or getattr(response, "parsed", None) is None:
-                raise ValueError("Model returned no parsable content (possibly blocked or empty).")
-            return response.parsed
-        except Exception as e:
-            last_exc = e
-            if attempt < MAX_RETRIES and _is_retryable(e):
-                # Exponential backoff with jitter: 503 spikes are usually short,
-                # but retrying all workers at the same instant re-creates the spike.
-                delay = RETRY_BACKOFF_S * (2 ** attempt) + random.uniform(0, 0.5)
-                logger.warning(
-                    "Retryable Gemini error (attempt %d/%d, waiting %.1fs): %s",
-                    attempt + 1, MAX_RETRIES, delay, e,
+
+    # Try the currently-working model first, then the rest of the chain.
+    ordered = [MODEL_NAME] + [m for m in MODEL_CANDIDATES if m != MODEL_NAME]
+
+    for model in ordered:
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = _gemini_client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": schema,
+                        "temperature": TEMPERATURE,
+                    },
                 )
-                time.sleep(delay)
-                continue
-            break
+                if response is None or getattr(response, "parsed", None) is None:
+                    raise ValueError("Model returned no parsable content (possibly blocked or empty).")
+                if model != MODEL_NAME:
+                    logger.warning("Switched active model to %s", model)
+                    MODEL_NAME = model  # remember the working model
+                return response.parsed
+            except Exception as e:
+                last_exc = e
+                # Daily quota exhausted or model unavailable -> try the NEXT
+                # model immediately rather than burning time on retries.
+                if _is_daily_quota(e) or not _is_retryable(e):
+                    logger.warning("Model %s unusable (%s); trying next candidate", model, type(e).__name__)
+                    break
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BACKOFF_S * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(
+                        "Retryable error on %s (attempt %d/%d, waiting %.1fs): %s",
+                        model, attempt + 1, MAX_RETRIES, delay, e,
+                    )
+                    time.sleep(delay)
+                    continue
+                break
+
     raise last_exc
 
 
@@ -144,6 +183,14 @@ class ComparisonResult(BaseModel):
     evidence_relevance_score: float
     reasoning: str
     cited_url: str
+
+
+class IndexedComparison(ComparisonResult):
+    claim_index: int
+
+
+class BatchComparisonResult(BaseModel):
+    comparisons: List[IndexedComparison]
 
 
 # --- Prompts ----------------------------------------------------------------
@@ -197,20 +244,19 @@ SCENE:
 {scene_text}
 """
 
-COMPARISON_PROMPT = """You are comparing a factual claim from a screenplay against retrieved web evidence.
+BATCH_COMPARISON_PROMPT = """You are comparing factual claims from a screenplay against retrieved web evidence.
 
-CLAIM: {claim}
+For EACH claim below, determine whether its evidence supports, contradicts, or is
+unclear about that claim. Score honestly:
+- source_agreement_score (0-1): how much that claim's sources agree with each other
+- source_authority_score (0-1): how authoritative/reliable those sources appear
+- evidence_relevance_score (0-1): how directly the evidence addresses that claim
 
-RETRIEVED EVIDENCE (these sources only - do not reference anything outside this list):
-{evidence_block}
+For each result, set claim_index to the number shown for that claim.
+cited_url must be EXACTLY one of the URLs listed under that same claim. Never
+invent or alter a URL, and never cite a URL listed under a different claim.
 
-Determine whether the evidence supports, contradicts, or is unclear about the claim.
-Score honestly:
-- source_agreement_score (0-1): how much the provided sources agree with each other
-- source_authority_score (0-1): how authoritative/reliable the sources appear
-- evidence_relevance_score (0-1): how directly the evidence addresses this specific claim
-
-cited_url must be EXACTLY one of the URLs listed above. Never invent or alter a URL.
+{claims_block}
 """
 
 
@@ -246,31 +292,10 @@ def retrieve(claim: Claim, scene_context: str) -> List[dict]:
     return evidence
 
 
-# --- Stage 3: comparison ----------------------------------------------------
-def compare(claim: Claim, evidence: List[dict]) -> dict:
-    # F6 - absence of evidence is NEVER a contradiction
-    if not evidence:
-        return {
-            "claim": claim.claim,
-            "category": claim.category,
-            "verdict": "Insufficient Evidence",
-            "confidence": 0,
-            "source_url": None,
-            "note": "No public record found. May be an invented name/place, or a real entity not well-indexed.",
-        }
-
-    evidence_urls = [e["url"] for e in evidence]
-    evidence_block = "\n".join(
-        f"- URL: {e['url']}\n  Excerpt: {' '.join(e.get('excerpts', []))[:400]}"
-        for e in evidence
-    )
-
-    result: ComparisonResult = _generate(
-        COMPARISON_PROMPT.format(claim=claim.claim, evidence_block=evidence_block),
-        ComparisonResult,
-    )
-
-    # F7 - citation must exist in what we actually retrieved
+# --- Stage 3: batched comparison -------------------------------------------
+def _score_and_label(claim: Claim, result: ComparisonResult, evidence_urls: List[str]) -> dict:
+    """Deterministic scoring + labelling. Shared by batch and fallback paths."""
+    # F7 - citation must exist in what we actually retrieved for THIS claim
     if result.cited_url not in evidence_urls:
         logger.warning("Rejected unverifiable citation: %s", result.cited_url)
         return {
@@ -313,27 +338,75 @@ def compare(claim: Claim, evidence: List[dict]) -> dict:
     }
 
 
-# --- Per-claim worker (isolated) --------------------------------------------
-def _verify_one(claim: Claim, scene_text: str) -> dict:
-    """F8 - a single claim's failure is contained here and never escapes."""
-    try:
-        evidence = retrieve(claim, scene_text)
-        return compare(claim, evidence)
-    except Exception as e:
-        # F15 - log the true cause; show the user something readable
-        logger.error("Claim failed: %r -> %s: %s", claim.claim, type(e).__name__, e)
-        return {
-            "claim": claim.claim,
-            "category": claim.category,
-            "verdict": "Verification failed for this claim",
-            "confidence": 0,
-            "source_url": None,
-            "note": (
-                "The verification service was briefly unavailable for this claim. Try again."
-                if _is_retryable(e)
-                else "This claim could not be verified due to a service error."
-            ),
-        }
+def _no_evidence_result(claim: Claim) -> dict:
+    # F6 - absence of evidence is NEVER a contradiction
+    return {
+        "claim": claim.claim,
+        "category": claim.category,
+        "verdict": "Insufficient Evidence",
+        "confidence": 0,
+        "source_url": None,
+        "note": "No public record found. May be an invented name/place, or a real entity not well-indexed.",
+    }
+
+
+def compare_batch(claims: List[Claim], evidence_map: dict) -> List[dict]:
+    """
+    Compare ALL claims in a single Gemini call.
+
+    QUOTA: this is the single most important optimisation in the app. Free-tier
+    daily quotas are counted per request, not per token. One call for N claims
+    instead of N calls cuts usage from (1 + N) to 2 requests per scene.
+    """
+    results = [None] * len(claims)
+
+    # Claims with no evidence never reach the model
+    to_compare = []
+    for i, claim in enumerate(claims):
+        if not evidence_map.get(i):
+            results[i] = _no_evidence_result(claim)
+        else:
+            to_compare.append(i)
+
+    if not to_compare:
+        return results
+
+    blocks = []
+    for i in to_compare:
+        ev = evidence_map[i]
+        ev_text = "\n".join(
+            f"    - URL: {e['url']}\n      Excerpt: {' '.join(e.get('excerpts', []))[:300]}"
+            for e in ev
+        )
+        blocks.append(f"CLAIM {i}: {claims[i].claim}\n  EVIDENCE:\n{ev_text}")
+
+    batch: BatchComparisonResult = _generate(
+        BATCH_COMPARISON_PROMPT.format(claims_block="\n\n".join(blocks)),
+        BatchComparisonResult,
+    )
+
+    seen = set()
+    for comp in batch.comparisons:
+        idx = comp.claim_index
+        if idx not in evidence_map or idx in seen or results[idx] is not None:
+            continue  # guard against a bad/duplicated index from the model
+        seen.add(idx)
+        urls = [e["url"] for e in evidence_map[idx]]
+        results[idx] = _score_and_label(claims[idx], comp, urls)
+
+    # Any claim the model silently skipped
+    for i in to_compare:
+        if results[i] is None:
+            results[i] = {
+                "claim": claims[i].claim,
+                "category": claims[i].category,
+                "verdict": "Needs Review",
+                "confidence": 0,
+                "source_url": None,
+                "note": "This claim could not be assessed in this pass.",
+            }
+
+    return results
 
 
 # --- Orchestrator -----------------------------------------------------------
@@ -345,47 +418,54 @@ def verify_scene(scene_text: str, genre_mode: str = "modern") -> List[dict]:
         claims = extract_claims(scene_text, genre_mode)
     except Exception as e:
         logger.error("Extraction failed: %s: %s", type(e).__name__, e)
+        if _is_daily_quota(e):
+            note = ("Daily free-tier quota for this service has been reached. "
+                    "It resets every 24 hours - please try again later.")
+        elif _is_retryable(e):
+            note = "The service is busy right now. Please try again in a moment."
+        else:
+            note = f"Could not analyze this scene: {e}"
         return [{
             "claim": "(extraction step)",
             "category": "other",
             "verdict": "Verification failed",
             "confidence": 0,
             "source_url": None,
-            "note": (
-                "The service is busy right now. Please try again in a moment."
-                if _is_retryable(e)
-                else f"Could not analyze this scene: {e}"
-            ),
+            "note": note,
         }]
 
     if not claims:
         return []
 
-    # Claims run concurrently - this buys back the latency that timeouts and
-    # retries would otherwise cost.
-    results_by_index = {}
+    # Retrieval runs concurrently (Parallel has generous limits, unlike Gemini)
+    evidence_map = {}
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CLAIMS) as pool:
-        futures = {
-            pool.submit(_verify_one, claim, scene_text): i
-            for i, claim in enumerate(claims)
-        }
+        futures = {pool.submit(retrieve, c, scene_text): i for i, c in enumerate(claims)}
         for future in as_completed(futures):
             idx = futures[future]
             remaining = GLOBAL_DEADLINE_S - (time.monotonic() - started)
             try:
-                results_by_index[idx] = future.result(timeout=max(remaining, 0.1))
+                evidence_map[idx] = future.result(timeout=max(remaining, 0.1))
             except Exception as e:
-                # F5 - global deadline hit; return what we have rather than hang
-                logger.error("Claim %d abandoned: %s: %s", idx, type(e).__name__, e)
-                results_by_index[idx] = {
-                    "claim": claims[idx].claim,
-                    "category": claims[idx].category,
-                    "verdict": "Verification failed for this claim",
-                    "confidence": 0,
-                    "source_url": None,
-                    "note": "This claim took too long to verify and was skipped.",
-                }
+                logger.error("Retrieval failed for claim %d: %s: %s", idx, type(e).__name__, e)
+                evidence_map[idx] = []  # F8 - treated as no-evidence, not a crash
 
-    # Preserve the model's ordering (most likely error first)
-    return [results_by_index[i] for i in sorted(results_by_index)]
+    # One batched Gemini call for every claim (F3 quota protection)
+    try:
+        return compare_batch(claims, evidence_map)
+    except Exception as e:
+        logger.error("Batch comparison failed: %s: %s", type(e).__name__, e)
+        if _is_daily_quota(e):
+            note = ("Daily free-tier quota reached during verification. "
+                    "It resets every 24 hours - please try again later.")
+        else:
+            note = "The verification service was briefly unavailable. Please try again."
+        return [{
+            "claim": c.claim,
+            "category": c.category,
+            "verdict": "Verification failed for this claim",
+            "confidence": 0,
+            "source_url": None,
+            "note": note,
+        } for c in claims]
   
