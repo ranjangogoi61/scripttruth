@@ -45,15 +45,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("scripttruth")
 
 # --- Configuration ------------------------------------------------------
-# Model fallback chain. Live logs showed gemini-3.6-flash has a free-tier
-# quota of only 20 requests/day, which is far too low to survive a judging
-# window. We try models in order and use the first that works; lite/older
-# models generally carry much higher free-tier daily limits.
+# Model fallback chain, ordered by free-tier daily quota (highest first).
+# Live logs showed gemini-3.6-flash has an RPD of only 20 — far too low to
+# survive a judging window — so it sits last as a fallback of last resort.
+# Free-tier quotas are per-model, so falling through the chain multiplies
+# available capacity. Daily quotas reset at midnight Pacific (12:30 PM IST).
 MODEL_CANDIDATES = [
-    "gemini-3.6-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-flash-latest",
-    "gemini-3.6-flash",
+    "gemini-3.8-flash",        # GA, newest flash line
+    "gemini-3.1-flash-lite",   # lite tier, higher RPM/RPD
+    "gemini-flash-latest",     # alias — confirmed valid (returned 503, not 404)
+    "gemini-2.0-flash-lite",   # older lite, historically ~1500 RPD
+    "gemini-3.6-flash",        # only 20 RPD — last resort
 ]
 MODEL_NAME = MODEL_CANDIDATES[0]  # starting point; _generate falls through
 MAX_CLAIMS_PER_REQUEST = 5
