@@ -200,6 +200,11 @@ The system is built around the assumption that things fail. Handled explicitly:
 The pipeline — extract claims, retrieve evidence per claim, compare, cite — is domain-agnostic. Only the extraction prompt and output vocabulary are specific to screenplays. The same engine applies directly to newsroom claim verification, advertising claim substantiation, and podcast guest-claim checking. Screenplays are the first domain, not the only one.
 
 ---
+## 🎥 Live Demo
+
+Watch ScriptTruth in action as it detects historical inaccuracies, technology anachronisms, and fictional entities using Google Gemini and Parallel Search.
+
+[![ScriptTruth Demo](https://img.youtube.com/vi/GbEfXByKoY0/maxresdefault.jpg)](https://www.youtube.com/watch?v=GbEfXByKoY0)
 
 ## License
 
