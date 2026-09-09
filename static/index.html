@@ -17,7 +17,7 @@
     --blue:#3B82F6; --blue-2:#60A5FA; --glow:rgba(59,130,246,.16);
     --verified:#34D399; --contradicted:#F87171;
     --review:#FBBF24; --disputed:#A78BFA; --none:#64748B;
-    --r:14px; --ease:cubic-bezier(.16,1,.3,1);
+    --r:14px; --ease:cubic-bezier(.16,1,.3,1); --maxw:1180px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html{-webkit-text-size-adjust:100%}
@@ -60,7 +60,7 @@
     border-bottom:1px solid var(--line);
   }
   .nav-in{
-    max-width:1180px; margin:0 auto; padding:13px 20px;
+    max-width:var(--maxw); margin:0 auto; padding:13px 20px;
     display:flex; align-items:center; justify-content:space-between; gap:16px;
   }
   .brand{display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--ink)}
@@ -78,7 +78,7 @@
   }
   .nav-link:hover{color:var(--ink); border-color:var(--line-hi); background:rgba(59,130,246,.06)}
 
-  .shell{max-width:1180px; margin:0 auto; padding:0 20px 100px; position:relative; z-index:1}
+  .shell{max-width:var(--maxw); margin:0 auto; padding:0 20px 100px; position:relative; z-index:1}
 
   /* ---------- hero ---------- */
   header{padding:52px 0 34px; animation:rise .8s var(--ease) both; max-width:720px}
