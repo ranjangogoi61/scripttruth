@@ -498,12 +498,15 @@ def verify_scene(scene_text: str, genre_mode: str = "modern",
     except Exception as e:
         logger.error("Extraction failed: %s: %s", type(e).__name__, e)
         if _is_daily_quota(e):
-            note = ("Daily free-tier quota for this service has been reached. "
-                    "It resets every 24 hours - please try again later.")
+            note = ("Free-tier daily quota reached. This is a Gemini API limit, "
+                    "not a fault in the app. Quota resets at 00:00 Pacific time.")
+            etype = "quota"
         elif _is_retryable(e):
             note = "The service is busy right now. Please try again in a moment."
+            etype = "busy"
         else:
             note = f"Could not analyze this scene: {e}"
+            etype = "error"
         return [{
             "claim": "(extraction step)",
             "category": "other",
@@ -513,6 +516,7 @@ def verify_scene(scene_text: str, genre_mode: str = "modern",
             "note": note,
             "breakdown": None,
             "sources_found": 0,
+            "error_type": etype,
         }]
 
     if not claims:
@@ -537,10 +541,12 @@ def verify_scene(scene_text: str, genre_mode: str = "modern",
     except Exception as e:
         logger.error("Batch comparison failed: %s: %s", type(e).__name__, e)
         if _is_daily_quota(e):
-            note = ("Daily free-tier quota reached during verification. "
-                    "It resets every 24 hours - please try again later.")
+            note = ("Free-tier daily quota reached. This is a Gemini API limit, "
+                    "not a fault in the app. Quota resets at 00:00 Pacific time.")
+            etype = "quota"
         else:
             note = "The verification service was briefly unavailable. Please try again."
+            etype = "busy"
         return [{
             "claim": c.claim,
             "category": c.category,
@@ -550,4 +556,5 @@ def verify_scene(scene_text: str, genre_mode: str = "modern",
             "note": note,
             "breakdown": None,
             "sources_found": 0,
+            "error_type": etype,
         } for c in claims]
