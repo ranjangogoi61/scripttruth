@@ -107,9 +107,13 @@
 
   /* ---------- layout ---------- */
   .grid{display:grid; grid-template-columns:1fr; gap:26px; align-items:start}
-  @media(min-width:1000px){
-    .grid{grid-template-columns:minmax(0,440px) minmax(0,1fr); gap:34px}
+@media(min-width:860px){
+    .grid{grid-template-columns:minmax(0,420px) minmax(0,1fr); gap:30px}
     .col-l{position:sticky; top:74px}
+  }
+  @media(min-width:1500px){
+    :root{--maxw:1400px}
+    .grid{grid-template-columns:minmax(0,480px) minmax(0,1fr); gap:40px}
   }
 
   /* ---------- domain tabs ---------- */
